@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lil Monitor - Automated Git Activity Summary</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            padding: 40px;
+        }
+
+        h1 {
+            color: #667eea;
+            margin-bottom: 10px;
+            font-size: 2.5em;
+        }
+
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 1.1em;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #444;
+        }
+
+        .help-text {
+            display: block;
+            font-size: 0.85em;
+            color: #666;
+            margin-bottom: 10px;
+        }
+
+        input[type="text"],
+        input[type="date"],
+        textarea {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 6px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+            font-family: inherit;
+        }
+
+        input:focus,
+        textarea:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        textarea {
+            min-height: 80px;
+            resize: vertical;
+        }
+
+        .repos-list {
+            border: 2px solid #e0e0e0;
+            border-radius: 6px;
+            padding: 15px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+        .repo-item {
+            padding: 10px;
+            margin-bottom: 8px;
+            border-radius: 4px;
+            transition: background 0.2s;
+            display: flex;
+            align-items: center;
+            cursor: pointer;
+        }
+
+        .repo-item:hover {
+            background: #f5f5f5;
+        }
+
+        .repo-item input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            margin-right: 12px;
+            cursor: pointer;
+        }
+
+        .repo-item label {
+            margin: 0;
+            cursor: pointer;
+            flex: 1;
+            font-weight: normal;
+        }
+
+        .repo-name {
+            font-weight: 600;
+            color: #667eea;
+        }
+
+        .repo-path {
+            font-size: 0.85em;
+            color: #666;
+            font-family: 'Courier New', monospace;
+        }
+
+        .select-all {
+            margin-bottom: 10px;
+            padding: 8px 12px;
+            background: #f0f0f0;
+            border-radius: 4px;
+            cursor: pointer;
+            display: inline-block;
+            font-size: 0.9em;
+        }
+
+        .select-all:hover {
+            background: #e0e0e0;
+        }
+
+        button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 14px 32px;
+            font-size: 16px;
+            font-weight: 600;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            width: 100%;
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
+        }
+
+        button:active {
+            transform: translateY(0);
+        }
+
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .output {
+            margin-top: 30px;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 6px;
+            border-left: 4px solid #667eea;
+            display: none;
+        }
+
+        .output.visible {
+            display: block;
+        }
+
+        .output h2 {
+            color: #667eea;
+            margin-bottom: 15px;
+        }
+
+        .output #summaryContent {
+            background: white;
+            padding: 20px;
+            border-radius: 6px;
+            overflow-x: auto;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+        }
+
+        .loading.visible {
+            display: block;
+        }
+
+        .spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 10px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+
+        .error {
+            background: #fee;
+            color: #c33;
+            padding: 15px;
+            border-radius: 6px;
+            margin-top: 20px;
+            border-left: 4px solid #c33;
+            display: none;
+        }
+
+        .error.visible {
+            display: block;
+        }
+
+        .info-box {
+            background: #e8f5e9;
+            border: 1px solid #81c784;
+            border-radius: 6px;
+            padding: 20px;
+            margin-bottom: 30px;
+        }
+
+        .info-box h3 {
+            color: #2e7d32;
+            margin-bottom: 12px;
+            font-size: 1.2em;
+        }
+
+        .info-box ol {
+            margin-left: 20px;
+            color: #333;
+            line-height: 1.8;
+        }
+
+        .info-box li {
+            margin-bottom: 8px;
+        }
+
+        @media (max-width: 768px) {
+            .grid {
+                grid-template-columns: 1fr;
+            }
+
+            .container {
+                padding: 20px;
+            }
+
+            h1 {
+                font-size: 2em;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Lil Monitor</h1>
+        <p class="subtitle">Automated Git activity summaries for non-technical stakeholders</p>
+
+        <div class="info-box">
+            <h3>📋 Simple 2-step process:</h3>
+            <ol>
+                <li><strong>Select repositories</strong> - Check the repos you want to summarize</li>
+                <li><strong>Pick date range</strong> - Time period to summarize</li>
+            </ol>
+        </div>
+
+        <form id="summaryForm">
+            <div class="form-group">
+                <label>Your Git Repositories *</label>
+                <span class="help-text">Select one or more repositories to include in the summary</span>
+                <div class="select-all" onclick="toggleSelectAll()">Select All / Deselect All</div>
+                <div id="reposList" class="repos-list">
+                    <div style="text-align: center; padding: 20px; color: #666;">
+                        Loading repositories...
+                    </div>
+                </div>
+            </div>
+
+            <div class="grid">
+                <div class="form-group">
+                    <label for="startDate">Start Date *</label>
+                    <input type="date" id="startDate" name="startDate" required>
+                </div>
+
+                <div class="form-group">
+                    <label for="endDate">End Date *</label>
+                    <input type="date" id="endDate" name="endDate" required>
+                </div>
+            </div>
+
+            <button type="submit">🚀 Generate Summary</button>
+        </form>
+
+        <div class="error" id="error"></div>
+
+        <div class="loading" id="loading">
+            <div class="spinner"></div>
+            <p>Extracting commits and generating your summary...</p>
+        </div>
+
+        <div class="output" id="output">
+            <h2>📊 Generated Summary</h2>
+            <div id="summaryContent"></div>
+        </div>
+    </div>
+
+    <script type="module" src="/main.js"></script>
+</body>
+</html>
