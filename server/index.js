@@ -32,22 +32,23 @@ app.use(express.json());
 // Initialize Gemini
 const genAI = new GoogleGenerativeAI(process.env.VITE_GEMINI_API_KEY);
 
-const SYSTEM_PROMPT = `You are an assistant that generates ONE unified, human-friendly project update summarizing recent work across one or more Git repositories.
+const SYSTEM_PROMPT = `You are an assistant that generates a human-friendly project update summarizing recent work in a Git repository.
 
 Your responsibilities:
 
-1. First, provide a non-technical description of what was done during the date range.
-2. After describing what was done, include the project about/description.
-3. Use non-technical, pedagogical explanations that:
+1. Tell a CHRONOLOGICAL STORY of what was done during the date range, progressing from earliest to latest work.
+2. Give equal weight to all periods - don't focus more on early commits than later ones.
+3. After describing what was done, include the project about/description.
+4. Use non-technical, pedagogical explanations that:
    - Explain the impact of the work in everyday terms.
    - Help non-technical readers understand what the work means.
    - Avoid jargon unless it is explained briefly.
-4. Group related changes into themes instead of commit-by-commit explanations.
-5. Do NOT invent details. Base your summary strictly on:
+5. Group related changes into themes, but maintain chronological flow.
+6. Do NOT invent details. Base your summary strictly on:
    - The project goal/about
    - The commit messages
    - Any provided context from the caller.
-6. At the end, include all commit details.
+7. At the end, include all commit details.
 
 OUTPUT REQUIREMENTS:
 - Output MUST be valid HTML.
@@ -140,49 +141,47 @@ async function extractProjectMetadata(repoPath) {
     return { projectName, projectGoal };
 }
 
-// Extract commits from git repositories
-async function extractCommitsFromRepos(repoPaths, startDate, endDate) {
-    const allCommits = [];
+// Extract commits from a single git repository
+async function extractCommitsFromRepo(repoPath, startDate, endDate) {
+    try {
+        const git = simpleGit(repoPath);
 
-    for (const repoPath of repoPaths) {
-        try {
-            const git = simpleGit(repoPath);
+        // Build git log options using --since and --until
+        const logOptions = [
+            `--since="${startDate}"`,
+            `--until="${endDate}"`,
+            '--format=%h|%ai|%s|%an|%ae'
+        ];
 
-            // Build git log options using --since and --until
-            const logOptions = [
-                `--since="${startDate}"`,
-                `--until="${endDate}"`,
-                '--format=%h|%ai|%s|%an|%ae'
-            ];
+        const log = await git.raw(['log', ...logOptions]);
 
-            const log = await git.raw(['log', ...logOptions]);
+        // Parse the log output
+        const repoName = repoPath.split('/').pop();
+        const lines = log.trim().split('\n').filter(line => line.length > 0);
 
-            // Parse the log output
-            const repoName = repoPath.split('/').pop();
-            const lines = log.trim().split('\n').filter(line => line.length > 0);
+        const commits = [];
+        lines.forEach(line => {
+            const [hash, date, message, authorName, authorEmail] = line.split('|');
+            if (hash && date) {
+                commits.push({
+                    date: date.split(' ')[0],
+                    repo: repoName,
+                    hash: hash,
+                    author: authorName,
+                    message: message
+                });
+            }
+        });
 
-            lines.forEach(line => {
-                const [hash, date, message, authorName, authorEmail] = line.split('|');
-                if (hash && date) {
-                    allCommits.push({
-                        date: date.split(' ')[0],
-                        repo: repoName,
-                        hash: hash,
-                        author: authorName,
-                        message: message
-                    });
-                }
-            });
+        // Sort by date (chronological order)
+        commits.sort((a, b) => new Date(a.date) - new Date(b.date));
 
-        } catch (error) {
-            console.error(`Error reading repo ${repoPath}:`, error.message);
-        }
+        return commits;
+
+    } catch (error) {
+        console.error(`Error reading repo ${repoPath}:`, error.message);
+        return [];
     }
-
-    // Sort by date
-    allCommits.sort((a, b) => new Date(a.date) - new Date(b.date));
-
-    return allCommits;
 }
 
 // Format commits as markdown table
@@ -206,10 +205,124 @@ function formatCommitsAsTable(commits) {
     return table;
 }
 
+// Generate summary for a single repository
+async function generateSummaryForRepo(repoPath, startDate, endDate, nextSteps) {
+    // Extract project metadata
+    const metadata = await extractProjectMetadata(repoPath);
+
+    // Extract commits
+    const commits = await extractCommitsFromRepo(repoPath, startDate, endDate);
+
+    if (commits.length === 0) {
+        return {
+            repoName: metadata.projectName,
+            repoPath: repoPath,
+            summary: `<p style="color: #666; padding: 20px;">No commits found for ${metadata.projectName} between ${startDate} and ${endDate}.</p>`,
+            commitsCount: 0,
+            commits: []
+        };
+    }
+
+    // Format commits as table
+    const commitsTable = formatCommitsAsTable(commits);
+
+    // Build runtime input
+    let runtimeInput = `# PROJECT CONTEXT
+project_name: ${metadata.projectName}
+project_goal: ${metadata.projectGoal || 'Development activity summary'}
+audience: Senior stakeholders who want non-technical explanations.
+date_range: ${startDate} to ${endDate}
+
+notes_for_emphasis:
+- Tell a chronological story from earliest to latest commits
+- Give equal weight to all time periods
+- Highlight reductions in manual work
+- Emphasize AI-safety improvements (guardrails, constraints)
+- Avoid technical jargon unless explained simply
+`;
+
+    if (nextSteps) {
+        runtimeInput += `\nnext_steps:\n${nextSteps}\n`;
+    }
+
+    runtimeInput += `\n# COMMITS TABLE\n${commitsTable}`;
+
+    // Generate summary with Gemini
+    const model = genAI.getGenerativeModel({
+        model: 'gemini-2.0-flash',
+        systemInstruction: SYSTEM_PROMPT
+    });
+
+    const result = await model.generateContent(runtimeInput);
+    const response = await result.response;
+    const summary = response.text();
+
+    return {
+        repoName: metadata.projectName,
+        repoPath: repoPath,
+        summary: summary,
+        commitsCount: commits.length,
+        commits: commits
+    };
+}
+
+// Generate overview summary across multiple repos
+async function generateOverviewSummary(summaries, startDate, endDate) {
+    const repoNames = summaries.map(s => s.repoName).join(', ');
+    const totalCommits = summaries.reduce((sum, s) => sum + s.commitsCount, 0);
+
+    // Combine all commits and sort chronologically
+    const allCommits = [];
+    summaries.forEach(s => {
+        s.commits.forEach(commit => allCommits.push(commit));
+    });
+    allCommits.sort((a, b) => new Date(a.date) - new Date(b.date));
+
+    const commitsTable = formatCommitsAsTable(allCommits);
+
+    const overviewPrompt = `You are generating an EXECUTIVE OVERVIEW that tells the overall story across multiple projects.
+
+Generate a high-level summary that:
+1. Tells a chronological story of the work period from ${startDate} to ${endDate}
+2. Identifies major themes and progress across all projects: ${repoNames}
+3. Explains the collective impact in non-technical terms
+4. Maintains chronological flow without bias toward early work
+5. Is concise (2-3 paragraphs maximum)
+
+OUTPUT REQUIREMENTS:
+- Output MUST be valid HTML
+- Use this structure:
+
+<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; border-radius: 8px; margin-bottom: 30px;">
+  <h2 style="color: white; margin-bottom: 15px; font-size: 1.8em;">📋 Executive Overview</h2>
+  <p style="font-size: 0.9em; opacity: 0.9; margin-bottom: 20px;">${startDate} to ${endDate} • ${totalCommits} commits across ${summaries.length} projects</p>
+  <div style="line-height: 1.8; font-size: 1.05em;">
+    (2-3 paragraphs telling the overall story)
+  </div>
+</div>`;
+
+    const runtimeInput = `# OVERVIEW CONTEXT
+Projects: ${repoNames}
+Total commits: ${totalCommits}
+Date range: ${startDate} to ${endDate}
+
+# ALL COMMITS (CHRONOLOGICALLY SORTED)
+${commitsTable}`;
+
+    const model = genAI.getGenerativeModel({
+        model: 'gemini-2.0-flash',
+        systemInstruction: overviewPrompt
+    });
+
+    const result = await model.generateContent(runtimeInput);
+    const response = await result.response;
+    return response.text();
+}
+
 // API endpoint to generate summary
 app.post('/api/generate-summary', async (req, res) => {
     try {
-        const { projectName, projectGoal, repoPaths, startDate, endDate, nextSteps, recipientEmails } = req.body;
+        const { repoPaths, startDate, endDate, nextSteps } = req.body;
 
         // Validate inputs
         if (!repoPaths || repoPaths.length === 0) {
@@ -218,71 +331,24 @@ app.post('/api/generate-summary', async (req, res) => {
             });
         }
 
-        // Extract project metadata from repositories
-        let autoProjectName = projectName;
-        let autoProjectGoal = projectGoal;
-
-        if (!autoProjectName || !autoProjectGoal) {
-            const metadataPromises = repoPaths.map(path => extractProjectMetadata(path));
-            const metadataList = await Promise.all(metadataPromises);
-
-            // Use first repo's metadata or combine names
-            if (!autoProjectName) {
-                autoProjectName = metadataList.length === 1
-                    ? metadataList[0].projectName
-                    : metadataList.map(m => m.projectName).join(', ');
-            }
-
-            if (!autoProjectGoal) {
-                // Use first repo's goal or create generic one
-                autoProjectGoal = metadataList.find(m => m.projectGoal)?.projectGoal
-                    || `Summary of development activity across ${repoPaths.length} repository/repositories.`;
-            }
-        }
-
-        // Extract commits from repositories
-        const commits = await extractCommitsFromRepos(
-            repoPaths,
-            startDate,
-            endDate
+        // Generate summary for each repository
+        const summaries = await Promise.all(
+            repoPaths.map(repoPath => generateSummaryForRepo(repoPath, startDate, endDate, nextSteps))
         );
 
-        // Format commits as table
-        const commitsTable = formatCommitsAsTable(commits);
+        const totalCommits = summaries.reduce((sum, s) => sum + s.commitsCount, 0);
 
-        // Build runtime input
-        let runtimeInput = `# PROJECT CONTEXT
-project_name: ${autoProjectName}
-project_goal: ${autoProjectGoal}
-audience: Senior stakeholders who want non-technical explanations.
-date_range: ${startDate} to ${endDate}
-
-notes_for_emphasis:
-- Highlight reductions in manual work.
-- Emphasize AI-safety improvements (guardrails, constraints).
-- Avoid technical jargon unless explained simply.
-`;
-
-        if (nextSteps) {
-            runtimeInput += `\nnext_steps:\n${nextSteps}\n`;
+        // Generate overview if multiple repos
+        let overviewSummary = null;
+        if (repoPaths.length > 1) {
+            overviewSummary = await generateOverviewSummary(summaries, startDate, endDate);
         }
 
-        runtimeInput += `\n# COMMITS TABLE\n${commitsTable}`;
-
-        // Generate summary with Gemini
-        const model = genAI.getGenerativeModel({
-            model: 'gemini-2.0-flash',
-            systemInstruction: SYSTEM_PROMPT
-        });
-
-        const result = await model.generateContent(runtimeInput);
-        const response = await result.response;
-        const summary = response.text();
-
         res.json({
-            summary,
-            commitsCount: commits.length,
-            commits: commits
+            overviewSummary: overviewSummary,
+            summaries: summaries,
+            totalCommits: totalCommits,
+            repoCount: repoPaths.length
         });
 
     } catch (error) {

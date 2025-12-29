@@ -107,12 +107,35 @@ form.addEventListener('submit', async (e) => {
 
         const data = await response.json();
 
-        // Display the summary as HTML
-        summaryContent.innerHTML = data.summary;
+        // Build the output HTML
+        let outputHTML = '';
+
+        // Add overview summary if multiple repos
+        if (data.overviewSummary) {
+            outputHTML += data.overviewSummary;
+        }
+
+        // Add individual repo summaries
+        data.summaries.forEach((repoSummary, index) => {
+            if (data.summaries.length > 1) {
+                // Add separator between repos when multiple exist
+                outputHTML += `
+                    <div style="border-top: 3px solid #667eea; margin: 50px 0 30px 0;"></div>
+                    <h2 style="color: #667eea; font-size: 1.8em; margin-bottom: 20px;">
+                        📦 ${repoSummary.repoName}
+                        <span style="font-size: 0.6em; color: #999; font-weight: normal;">(${repoSummary.commitsCount} commits)</span>
+                    </h2>
+                `;
+            }
+            outputHTML += repoSummary.summary;
+        });
+
+        // Display the summary
+        summaryContent.innerHTML = outputHTML;
         loading.classList.remove('visible');
         output.classList.add('visible');
 
-        console.log(`Generated summary from ${data.commitsCount} commits`);
+        console.log(`Generated ${data.repoCount} summaries from ${data.totalCommits} total commits`);
 
     } catch (error) {
         console.error('Error generating summary:', error);
